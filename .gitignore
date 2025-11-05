@@ -3,10 +3,12 @@
 *.tfstate
 *.tfstate.*
 crash.log
-# Big/temporary
+
+# Large/temporary
 *.zip
 *.tar
 *.tar.gz
+
 # Python
 __pycache__/
 *.pyc
