@@ -3,22 +3,10 @@
 *.tfstate
 *.tfstate.*
 crash.log
-override.tf
-override.tf.json
-*_override.tf
-*_override.tf.json
-.terraformrc
-terraform.rc
-
-# Big/temporary files
+# Big/temporary
 *.zip
 *.tar
 *.tar.gz
-
-# Python / Ansible
+# Python
 __pycache__/
 *.pyc
-*.pyo
-
-# Node/npm (if ever used)
-node_modules/
