@@ -1,0 +1,10 @@
+---
+- name: Install and enable Docker on Amazon Linux 2023
+  hosts: web
+  become: true
+  tasks:
+    - name: Install Docker
+      raw: |
+        sudo dnf -y install docker
+        sudo systemctl enable --now docker
+        sudo usermod -aG docker ec2-user

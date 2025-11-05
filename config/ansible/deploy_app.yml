@@ -1,0 +1,45 @@
+---
+- name: Deploy sample web app container
+  hosts: web
+  become: true
+
+  vars:
+    app_dir: /opt/ca-app
+    image_name: ca-sample:latest
+    container_name: ca-web
+
+  tasks:
+    - name: Create app directory on server
+      file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: ec2-user
+        group: ec2-user
+        mode: '0755'
+
+    - name: Copy app source to server (recursive)
+      copy:
+        src: "{{ lookup('env','HOME') }}/aws-terra-ansible-cicd/app/"
+        dest: "{{ app_dir }}/"
+        owner: ec2-user
+        group: ec2-user
+
+    - name: Build Docker image
+      command: docker build -t {{ image_name }} {{ app_dir }}
+
+    - name: Stop old container if running
+      shell: |
+        docker ps -q --filter "name={{ container_name }}" | grep -q . && docker stop {{ container_name }} || true
+      changed_when: false
+
+    - name: Remove old container if exists
+      shell: |
+        docker ps -aq --filter "name={{ container_name }}" | grep -q . && docker rm {{ container_name }} || true
+      changed_when: false
+
+    - name: Run new container on port 80
+      command: >
+        docker run -d --name {{ container_name }}
+        --restart unless-stopped
+        -p 80:80
+        {{ image_name }}
