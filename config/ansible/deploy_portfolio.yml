@@ -1,9 +1,9 @@
-- name: Deploy Flask portfolio on EC2 (Gunicorn + Nginx)
+- name: Deploy portfolio (root does all; chown to app at end)
   hosts: web
   become: true
+  gather_facts: true
   vars:
-    repo_url: "{{ lookup('env', 'REPO_URL') }}"
-    app_module: "{{ lookup('env', 'APP_MODULE') | default('app:app', true) }}"
+    repo_url: "{{ lookup('env','REPO_URL') }}"
     app_user: app
     app_dir: /opt/portfolio
     venv_dir: /opt/portfolio/venv
@@ -12,31 +12,18 @@
     python_pkg: python3
     pip_pkg: python3-pip
     git_pkg: git
-    ansible_become_method: sudo
-    ansible_remote_tmp: "/home/{{ app_user }}/.ansible/tmp"   # <— key fix
+    app_module: "{{ lookup('env','APP_MODULE') | default('app:app', true) }}"
 
   pre_tasks:
-    - name: Assert repo_url provided
+    - name: Sanity check repo_url
       ansible.builtin.assert:
         that: repo_url is match("^(git@|https://).*")
         fail_msg: "Set REPO_URL env var to your Git repo (HTTPS or SSH)."
 
-    - name: Ensure remote tmp directory for app user exists
-      ansible.builtin.file:
-        path: "/home/{{ app_user }}/.ansible/tmp"
-        state: directory
-        owner: "{{ app_user }}"
-        group: "{{ app_user }}"
-        mode: "0700"
-
   tasks:
-    - name: Install system packages
+    - name: Ensure base packages
       ansible.builtin.package:
-        name:
-          - "{{ python_pkg }}"
-          - "{{ pip_pkg }}"
-          - "{{ git_pkg }}"
-          - nginx
+        name: [ "{{ python_pkg }}", "{{ pip_pkg }}", "{{ git_pkg }}", nginx ]
         state: present
 
     - name: Ensure app user exists
@@ -45,48 +32,66 @@
         create_home: yes
         shell: /bin/bash
 
-    - name: Create app directory
+    - name: Create app directory (root-owned initially)
       ansible.builtin.file:
         path: "{{ app_dir }}"
         state: directory
-        owner: "{{ app_user }}"
-        group: "{{ app_user }}"
         mode: "0755"
 
-    - name: Clone/update repo (as app user)
-      become_user: "{{ app_user }}"
-      ansible.builtin.git:
-        repo: "{{ repo_url }}"
-        dest: "{{ app_dir }}"
-        version: "HEAD"
-        force: yes
-        update: yes
+    - name: If repo exists, pull; else clone fresh
+      ansible.builtin.shell: |
+        set -e
+        if [ -d "{{ app_dir }}/.git" ]; then
+          cd "{{ app_dir }}"
+          git config --global --add safe.directory "{{ app_dir }}" || true
+          git fetch --all --prune
+          git reset --hard origin/HEAD || git reset --hard HEAD
+        else
+          rm -rf "{{ app_dir }}/*" "{{ app_dir }}/.??*" || true
+          git config --global --add safe.directory "{{ app_dir }}" || true
+          git clone "{{ repo_url }}" "{{ app_dir }}"
+        fi
+      args:
+        executable: /bin/bash
 
-    - name: Create venv (as app user)
-      become_user: "{{ app_user }}"
+    - name: Detect Flask markers
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: flask_markers
+      loop:
+        - "{{ app_dir }}/requirements.txt"
+        - "{{ app_dir }}/app.py"
+        - "{{ app_dir }}/wsgi.py"
+
+    - name: Decide if Flask deploy
+      ansible.builtin.set_fact:
+        is_flask: "{{ (flask_markers.results | selectattr('stat.exists') | list | length) > 0 }}"
+
+    - name: Create venv (Flask only, root)
+      when: is_flask
       ansible.builtin.command: "{{ python_pkg }} -m venv {{ venv_dir }}"
       args:
         creates: "{{ venv_dir }}/bin/activate"
 
-    - name: Upgrade pip/setuptools/wheel (as app user)
-      become_user: "{{ app_user }}"
-      ansible.builtin.shell: |
-        set -e
-        {{ venv_dir }}/bin/pip install --upgrade pip setuptools wheel
-      args: { chdir: "{{ app_dir }}" }
+    - name: Upgrade pip/setuptools/wheel (Flask)
+      when: is_flask
+      ansible.builtin.shell: "{{ venv_dir }}/bin/pip install --upgrade pip setuptools wheel"
 
-    - name: Install requirements if requirements.txt exists (as app user)
-      become_user: "{{ app_user }}"
+    - name: Install requirements (Flask)
+      when: is_flask
       ansible.builtin.shell: |
         set -e
+        cd "{{ app_dir }}"
         if [ -f requirements.txt ]; then
           {{ venv_dir }}/bin/pip install -r requirements.txt
         else
           {{ venv_dir }}/bin/pip install flask gunicorn
         fi
-      args: { chdir: "{{ app_dir }}" }
+      args:
+        executable: /bin/bash
 
-    - name: Create systemd service for Gunicorn
+    - name: Create systemd service for Gunicorn (Flask)
+      when: is_flask
       ansible.builtin.copy:
         dest: "/etc/systemd/system/{{ service_name }}.service"
         mode: "0644"
@@ -107,14 +112,15 @@
           [Install]
           WantedBy=multi-user.target
 
-    - name: Reload systemd and enable+start service
+    - name: Reload & start service (Flask)
+      when: is_flask
       ansible.builtin.systemd:
         name: "{{ service_name }}"
         daemon_reload: yes
         state: restarted
         enabled: yes
 
-    - name: Nginx reverse proxy config
+    - name: Nginx config (proxy if Flask, static if not)
       ansible.builtin.copy:
         dest: /etc/nginx/conf.d/portfolio.conf
         mode: "0644"
@@ -124,6 +130,7 @@
             server_name _;
             client_max_body_size 20m;
 
+            {% if is_flask %}
             location / {
               proxy_pass http://{{ gunicorn_bind }};
               proxy_set_header Host $host;
@@ -131,6 +138,13 @@
               proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
               proxy_set_header X-Forwarded-Proto $scheme;
             }
+            {% else %}
+            root {{ app_dir }};
+            index index.html index.htm;
+            location / {
+              try_files $uri $uri/ =404;
+            }
+            {% endif %}
           }
 
     - name: Test Nginx config
@@ -138,7 +152,7 @@
       register: nginx_test
       changed_when: false
 
-    - name: Show Nginx test output
+    - name: Show Nginx test
       ansible.builtin.debug:
         var: nginx_test.stdout_lines
 
@@ -148,14 +162,18 @@
         state: reloaded
         enabled: yes
 
-    - name: Health check over localhost (Gunicorn)
+    - name: Chown tree to app user at end
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        recurse: yes
+
+    - name: Health check (Flask socket)
+      when: is_flask
       ansible.builtin.shell: "curl -fsS http://{{ gunicorn_bind }} | head -c 200 || true"
       register: hc_local
       changed_when: false
-
-    - name: Show localhost health check
-      ansible.builtin.debug:
-        var: hc_local.stdout
 
     - name: Health check via Nginx
       ansible.builtin.uri:
@@ -164,6 +182,9 @@
       register: hc_http
       failed_when: false
 
-    - name: Show public HTTP health
+    - name: Show HTTP head
       ansible.builtin.debug:
-        var: hc_http.content
+        msg: |
+          Flask? {{ is_flask }}
+          HTTP head:
+          {{ (hc_http.content | default(''))[:200] }}
