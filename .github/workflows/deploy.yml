@@ -9,9 +9,12 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ANSIBLE_HOST_KEY_CHECKING: "False"
-      EC2_HOST: ${{ secrets.EC2_HOST }}        # e.g. 34.243.11.213
-      EC2_USER: ${{ secrets.EC2_USER }}        # e.g. ubuntu or ec2-user
-      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}  # full PEM text
+      EC2_HOST: ${{ secrets.EC2_HOST }}
+      EC2_USER: ${{ secrets.EC2_USER }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      SECURITY_GROUP_ID: ${{ secrets.SECURITY_GROUP_ID }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -19,10 +22,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Ansible
+      - name: Install Ansible & AWS CLI
         run: |
           python -m pip install --upgrade pip
-          pip install "ansible-core==2.16.*"
+          pip install "ansible-core==2.16.*" awscli
 
       - name: Validate required secrets
         run: |
@@ -30,25 +33,47 @@ jobs:
           [ -n "$EC2_HOST" ] || die "EC2_HOST secret is empty"
           [ -n "$EC2_USER" ] || die "EC2_USER secret is empty"
           [ -n "$SSH_PRIVATE_KEY" ] || die "SSH_PRIVATE_KEY secret is empty"
+          [ -n "$AWS_REGION" ] || die "AWS_REGION secret is empty"
+          [ -n "$SECURITY_GROUP_ID" ] || die "SECURITY_GROUP_ID secret is empty"
+
+      - name: Configure AWS creds
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Prepare SSH
         run: |
           mkdir -p ~/.ssh
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/ec2_key
           chmod 600 ~/.ssh/ec2_key
-          # fingerprint host (3 retries, 5s timeout)
-          for i in 1 2 3; do
-            ssh-keyscan -T 5 -H "$EC2_HOST" >> ~/.ssh/known_hosts && break
-            echo "ssh-keyscan attempt $i failed; retrying..."
-            sleep 3
+
+      - name: Allow this runner IP on SG:22
+        id: sg_open
+        run: |
+          MYIP=$(curl -s https://api.ipify.org)
+          echo "myip=$MYIP" >> $GITHUB_OUTPUT
+          echo "Opening SG $SECURITY_GROUP_ID for $MYIP/32 on tcp/22"
+          aws ec2 authorize-security-group-ingress \
+            --group-id "$SECURITY_GROUP_ID" \
+            --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=${MYIP}/32,Description=GitHubActions}]"
+        continue-on-error: true
+
+      - name: Fingerprint host
+        run: |
+          # retry up to 10 times in case SG rule propagation is a bit slow
+          for i in {1..10}; do
+            ssh-keyscan -T 5 -H "$EC2_HOST" >> ~/.ssh/known_hosts && break || sleep 3
           done
 
       - name: Connectivity sanity
         run: |
           set -x
-          echo "EC2_HOST len=$(printf '%s' "$EC2_HOST" | wc -c)"
           getent ahosts "$EC2_HOST"
-          timeout 5 bash -c 'cat </dev/null >/dev/tcp/'"$EC2_HOST"'/22' && echo "TCP 22 reachable" || (echo "TCP 22 NOT reachable" && exit 1)
+          for i in {1..10}; do
+            timeout 5 bash -lc 'cat </dev/null >/dev/tcp/'"$EC2_HOST"'/22' && break || sleep 3
+          done
 
       - name: Build CI inventory
         run: |
@@ -64,3 +89,14 @@ jobs:
 
       - name: Deploy
         run: ansible-playbook -i config/ansible/inventory.cicd.ini config/ansible/deploy_portfolio_flask.yml -vv
+
+      - name: Revoke SG rule (cleanup)
+        if: always()
+        run: |
+          MYIP="${{ steps.sg_open.outputs.myip }}"
+          if [ -n "$MYIP" ]; then
+            echo "Revoking SG $SECURITY_GROUP_ID for $MYIP/32 on tcp/22"
+            aws ec2 revoke-security-group-ingress \
+              --group-id "$SECURITY_GROUP_ID" \
+              --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=${MYIP}/32,Description=GitHubActions}]"
+          fi
