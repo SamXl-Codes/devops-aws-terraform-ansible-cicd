@@ -9,15 +9,14 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
-      ANSIBLE_HOST_KEY_CHECKING: "False"   # or use ssh-keyscan step below
-      EC2_HOST: ${{ secrets.EC2_HOST }}    # e.g. 34.243.11.213
-      EC2_USER: ${{ secrets.EC2_USER }}    # ec2-user (Amazon Linux) or ubuntu (Ubuntu)
+      ANSIBLE_HOST_KEY_CHECKING: "False"
+      EC2_HOST: ${{ secrets.EC2_HOST }}
+      EC2_USER: ${{ secrets.EC2_USER }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
@@ -26,17 +25,32 @@ jobs:
           python -m pip install --upgrade pip
           pip install "ansible-core==2.16.*"
 
-      - name: Write SSH key from secret
+      - name: Validate required secrets
+        run: |
+          die(){ echo "::error::$1"; exit 1; }
+          [ -n "$EC2_HOST" ] || die "EC2_HOST secret is empty"
+          [ -n "$EC2_USER" ] || die "EC2_USER secret is empty"
+          [ -n "$SSH_PRIVATE_KEY" ] || die "SSH_PRIVATE_KEY secret is empty"
+
+      - name: Prepare SSH
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/ec2_key
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/ec2_key
           chmod 600 ~/.ssh/ec2_key
+          # Try a few times in case of transient issues
+          for i in 1 2 3; do
+            ssh-keyscan -T 5 -H "$EC2_HOST" >> ~/.ssh/known_hosts && break
+            echo "ssh-keyscan attempt $i failed; retrying..."
+            sleep 3
+          done
 
-      - name: Trust EC2 host key
+      - name: Connectivity sanity
         run: |
-          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+          set -x
+          getent ahosts "$EC2_HOST"
+          timeout 5 bash -c "cat < /dev/null > /dev/tcp/$EC2_HOST/22" && echo "TCP 22 reachable" || (echo "TCP 22 NOT reachable" && exit 1)
 
-      - name: Build inventory (CI)
+      - name: Build CI inventory
         run: |
           mkdir -p config/ansible
           cat > config/ansible/inventory.cicd.ini <<EOF
@@ -46,9 +60,7 @@ jobs:
           sed -n '1,200p' config/ansible/inventory.cicd.ini
 
       - name: Syntax check
-        run: |
-          ansible-playbook -i config/ansible/inventory.cicd.ini --syntax-check config/ansible/deploy_portfolio_flask.yml
+        run: ansible-playbook -i config/ansible/inventory.cicd.ini --syntax-check config/ansible/deploy_portfolio_flask.yml
 
       - name: Deploy
-        run: |
-          ansible-playbook -i config/ansible/inventory.cicd.ini config/ansible/deploy_portfolio_flask.yml -vv
+        run: ansible-playbook -i config/ansible/inventory.cicd.ini config/ansible/deploy_portfolio_flask.yml -vv
