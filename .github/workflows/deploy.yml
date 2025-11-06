@@ -1,18 +1,17 @@
 name: deploy
-
 on:
-  workflow_dispatch:
   push:
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
       ANSIBLE_HOST_KEY_CHECKING: "False"
-      EC2_HOST: ${{ secrets.EC2_HOST }}
-      EC2_USER: ${{ secrets.EC2_USER }}
-      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      EC2_HOST: ${{ secrets.EC2_HOST }}        # e.g. 34.243.11.213
+      EC2_USER: ${{ secrets.EC2_USER }}        # e.g. ubuntu or ec2-user
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}  # full PEM text
     steps:
       - uses: actions/checkout@v4
 
@@ -37,7 +36,7 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/ec2_key
           chmod 600 ~/.ssh/ec2_key
-          # Try a few times in case of transient issues
+          # fingerprint host (3 retries, 5s timeout)
           for i in 1 2 3; do
             ssh-keyscan -T 5 -H "$EC2_HOST" >> ~/.ssh/known_hosts && break
             echo "ssh-keyscan attempt $i failed; retrying..."
@@ -47,8 +46,9 @@ jobs:
       - name: Connectivity sanity
         run: |
           set -x
+          echo "EC2_HOST len=$(printf '%s' "$EC2_HOST" | wc -c)"
           getent ahosts "$EC2_HOST"
-          timeout 5 bash -c "cat < /dev/null > /dev/tcp/$EC2_HOST/22" && echo "TCP 22 reachable" || (echo "TCP 22 NOT reachable" && exit 1)
+          timeout 5 bash -c 'cat </dev/null >/dev/tcp/'"$EC2_HOST"'/22' && echo "TCP 22 reachable" || (echo "TCP 22 NOT reachable" && exit 1)
 
       - name: Build CI inventory
         run: |
