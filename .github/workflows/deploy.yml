@@ -1,48 +1,51 @@
 name: Deploy Portfolio to EC2 (Ansible)
 
 on:
+  workflow_dispatch:
   push:
-    branches: [ "main" ]
-    paths:
-      - "app/**"
-      - "config/ansible/**"
-      - ".github/workflows/deploy.yml"
-  workflow_dispatch: {}
+    branches: [ main ]
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
       ANSIBLE_HOST_KEY_CHECKING: "False"
-      ANSIBLE_STDOUT_CALLBACK: ${{ secrets.ANSIBLE_STDOUT_CALLBACK }}
-      EC2_HOST: ${{ secrets.EC2_HOST }}
-      EC2_USER: ${{ secrets.EC2_USER }}
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Ansible + ssh tools
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Ansible
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ansible openssh-client rsync python3-pip
+          python -m pip install --upgrade pip
+          pip install "ansible>=9" # or your pinned version
 
       - name: Write SSH key
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/aws-ca
-          chmod 600 ~/.ssh/aws-ca
-          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
 
-      - name: Create CI Inventory
+      - name: Generate CICD inventory
         run: |
-         echo "[web]" > config/ansible/inventory.cicd.ini
-         echo "${{ secrets.EC2_HOST }} ansible_user=ec2-user ansible_ssh_private_key_file=key.pem ansible_become=true" >> config/ansible/inventory.cicd.ini
+          mkdir -p config/ansible
+          cat > config/ansible/inventory.cicd.ini <<'INI'
+          [web]
+          ${EC2_HOST} ansible_user=${EC2_USER} ansible_ssh_private_key_file=~/.ssh/id_rsa ansible_python_interpreter=/usr/bin/python3
+          INI
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
 
       - name: Syntax check
         run: ansible-playbook -i config/ansible/inventory.cicd.ini --syntax-check config/ansible/deploy_portfolio_flask.yml
 
       - name: Deploy
         run: ansible-playbook -i config/ansible/inventory.cicd.ini config/ansible/deploy_portfolio_flask.yml
-
-      - name: Smoke test
-        run: curl -sS "http://${EC2_HOST}/" | head -c 300
+        env:
+          REPO_URL: ${{ secrets.REPO_URL || '' }}
