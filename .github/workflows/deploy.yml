@@ -33,12 +33,10 @@ jobs:
           chmod 600 ~/.ssh/aws-ca
           ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
 
-      - name: Create CI inventory
+      - name: Create CI Inventory
         run: |
-          cat > config/ansible/inventory.cicd.ini <<EOF2
-          [web]
-          ec2 ansible_host=${EC2_HOST} ansible_user=${EC2_USER} ansible_ssh_private_key_file=~/.ssh/aws-ca
-          EOF2
+         echo "[web]" > config/ansible/inventory.cicd.ini
+         echo "${{ secrets.EC2_HOST }} ansible_user=ec2-user ansible_ssh_private_key_file=key.pem ansible_become=true" >> config/ansible/inventory.cicd.ini
 
       - name: Syntax check
         run: ansible-playbook -i config/ansible/inventory.cicd.ini --syntax-check config/ansible/deploy_portfolio_flask.yml
