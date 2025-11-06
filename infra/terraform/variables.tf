@@ -1,21 +1,27 @@
+variable "public_key_base64" {
+  description = "Base64-encoded public key"
+  type        = string
+}
+
+variable "security_group_id" {
+  description = "Security Group ID"
+  type        = string
+}
+
 variable "aws_region" {
-  type    = string
-  default = "eu-west-1"
-}
-
-variable "public_key_path" {
-  type = string
-  # this is the SSH public key you generated earlier
-  default = "~/.ssh/aws-ca.pub"
-}
-
-variable "instance_type" {
-  type    = string
-  default = "t3.micro"
+  description = "AWS region"
+  type        = string
+  default     = "eu-west-1"
 }
 
 variable "my_ip_cidr" {
-  description = "Your public IP in CIDR format for SSH"
+  description = "Your public IP for SSH access"
   type        = string
-  default     = "0.0.0.0/0" # we will override with your real IP shortly
+  default     = "0.0.0.0/0"   # temporary – will be fixed by GitHub secret later
+}
+
+variable "instance_type" {
+  description = "EC2 instance type"
+  type        = string
+  default     = "t3.micro"
 }
