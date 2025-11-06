@@ -7,76 +7,90 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Set up Terraform
-      uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: 1.9.0  # Adjust to your version if different
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
 
-    - name: Install Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-    - name: Install Ansible and AWS CLI
-      run: |
-        python -m pip install --upgrade pip ansible-core==2.16.* awscli
+      - name: Install Ansible + AWS CLI
+        run: |
+          python -m pip install --upgrade pip
+          pip install ansible-core==2.16.* awscli
 
-    - name: Check Secrets
-      shell: bash
-      run: |
-        die(){ echo "::error::$1"; exit 1; }
-        [ -z "${{ secrets.AWS_ACCESS_KEY_ID }}" ] && die "AWS_ACCESS_KEY_ID secret is empty"
-        [ -z "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ] && die "AWS_SECRET_ACCESS_KEY secret is empty"
-        [ -z "${{ secrets.SSH_PRIVATE_KEY }}" ] && die "SSH_PRIVATE_KEY secret is empty"
-        [ -z "${{ secrets.SECURITY_GROUP_ID }}" ] && die "SECURITY_GROUP_ID secret is empty"
-        [ -z "${{ secrets.EC2_HOST }}" ] && die "EC2_HOST secret is empty"
+      # ──────── SECRET VALIDATION (this is what was killing your run) ────────
+      - name: Validate all secrets exist
+        run: |
+          set -e
+          echo "Checking required secrets..."
+          test -n "${{ secrets.AWS_ACCESS_KEY_ID }}"     || (echo "AWS_ACCESS_KEY_ID missing"     && exit 1)
+          test -n "${{ secrets.AWS_SECRET_ACCESS_KEY }}" || (echo "AWS_SECRET_ACCESS_KEY missing" && exit 1)
+          test -n "${{ secrets.SSH_PRIVATE_KEY }}"       || (echo "SSH_PRIVATE_KEY missing"       && exit 1)
+          test -n "${{ secrets.EC2_HOST }}"              || (echo "EC2_HOST missing"              && exit 1)
+          test -n "${{ secrets.SECURITY_GROUP_ID }}"     || (echo "SECURITY_GROUP_ID missing"     && exit 1)
+          echo "All secrets are present!"
 
-    - name: Terraform Init
-      working-directory: infra/terraform
-      env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        TF_VAR_security_group_id: ${{ secrets.SECURITY_GROUP_ID }}
-      run: terraform init
+      # ──────── TERRAFORM ────────
+      - name: Terraform Init
+        working-directory: infra/terraform
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          TF_VAR_security_group_id: ${{ secrets.SECURITY_GROUP_ID }}
+        run: terraform init -backend=false
 
-    - name: Terraform Plan
-      working-directory: infra/terraform
-      env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        TF_VAR_security_group_id: ${{ secrets.SECURITY_GROUP_ID }}
-      run: terraform plan -out=plan.tfout
+      - name: Terraform Plan
+        working-directory: infra/terraform
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          TF_VAR_security_group_id: ${{ secrets.SECURITY_GROUP_ID }}
+        run: terraform plan -out=plan.tfout
 
-    - name: Terraform Apply
-      working-directory: infra/terraform
-      env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        TF_VAR_security_group_id: ${{ secrets.SECURITY_GROUP_ID }}
-      run: terraform apply -auto-approve plan.tfout
+      - name: Terraform Apply
+        working-directory: infra/terraform
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          TF_VAR_security_group_id: ${{ secrets.SECURITY_GROUP_ID }}
+        run: terraform apply -auto-approve plan.tfout
 
-    - name: Deploy with Ansible
-      env:
-        ANSIBLE_HOST_KEY_CHECKING: False
-        ANSIBLE_DEPRECATION_WARNINGS: False
-      run: |
-        echo "${{ secrets.SSH_PRIVATE_KEY }}" > key.pem
-        chmod 400 key.pem
-        echo "Debug: Key file created at $(pwd)/key.pem"
-        echo "Debug: Key line count: $(wc -l < key.pem)"
-        echo "Debug: Key details: $(ls -l key.pem)"
-        KEY_PATH=$(pwd)/key.pem
-        mkdir -p config/ansible
-        echo "[web]" > config/ansible/inventory.cicd.ini
-        echo "${{ secrets.EC2_HOST }} ansible_user=ec2-user ansible_ssh_private_key_file=$KEY_PATH ansible_become=true ansible_remote_tmp=/tmp/.ansible/tmp" >> config/ansible/inventory.cicd.ini
-        ansible-playbook -i config/ansible/inventory.cicd.ini config/ansible/deploy_portfolio_flask.yml -vvv
-        rm -f key.pem
+      # ──────── ANSIBLE DEPLOY ────────
+      - name: Deploy with Ansible
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: False
+        run: |
+          # Create SSH key
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > key.pem
+          chmod 400 key.pem
 
-    - name: Clean up
-      if: always()
-      run: rm -f key.pem
+          # Debug (you will see this in logs)
+          echo "SSH key written ($(wc -l < key.pem) lines)"
+
+          # Create inventory
+          cat > inventory.ini <<EOF
+          [web]
+          ${{ secrets.EC2_HOST }} ansible_user=ec2-user ansible_ssh_private_key_file=$(pwd)/key.pem ansible_become=true ansible_remote_tmp=/tmp/.ansible/tmp
+          EOF
+
+          # Run playbook
+          ansible-playbook -i inventory.ini config/ansible/deploy_portfolio_flask.yml --ssh-common-args="-o StrictHostKeyChecking=no"
+
+          # Cleanup
+          rm -f key.pem inventory.ini
+
+      - name: Final cleanup
+        if: always()
+        run: rm -f key.pem inventory.ini
