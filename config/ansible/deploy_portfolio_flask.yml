@@ -1,0 +1,38 @@
+---
+- name: Deploy Flask portfolio (Gunicorn in Docker)
+  hosts: web
+  become: true
+
+  vars:
+    app_dir: /opt/portfolio
+    image_name: portfolio-flask:latest
+    container_name: portfolio-web
+
+  tasks:
+    - name: Ensure app directory exists
+      file:
+        path: "{{ app_dir }}"
+        state: directory
+
+    - name: Stop/remove any existing containers with same name (nginx or flask)
+      shell: |
+        docker ps -q --filter "name={{ container_name }}" | xargs -r docker stop
+        docker ps -aq --filter "name={{ container_name }}" | xargs -r docker rm
+      changed_when: false
+
+    - name: Copy portfolio sources to server
+      copy:
+        src: "{{ playbook_dir }}/../../app/"
+        dest: "{{ app_dir }}/"
+        owner: ec2-user
+        group: ec2-user
+
+    - name: Build Flask Docker image
+      command: docker build -t {{ image_name }} {{ app_dir }}
+
+    - name: Run Flask container (Gunicorn on port 80)
+      command: >
+        docker run -d --name {{ container_name }}
+        --restart unless-stopped
+        -p 80:80
+        {{ image_name }}
