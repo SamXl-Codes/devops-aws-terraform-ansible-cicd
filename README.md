@@ -54,3 +54,4 @@ GitHub Actions Workflow
        │       • Runs Gunicorn container on port 80
        └── Verifies deployment with smoke test (curl)
 FINAL GREEN RUN
+OPEN SSH FOR FINAL GREEN
