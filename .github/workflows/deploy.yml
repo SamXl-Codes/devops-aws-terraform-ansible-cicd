@@ -1,0 +1,50 @@
+name: Deploy Portfolio to EC2 (Ansible)
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "app/**"
+      - "config/ansible/**"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      ANSIBLE_HOST_KEY_CHECKING: "False"
+      ANSIBLE_STDOUT_CALLBACK: ${{ secrets.ANSIBLE_STDOUT_CALLBACK }}
+      EC2_HOST: ${{ secrets.EC2_HOST }}
+      EC2_USER: ${{ secrets.EC2_USER }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install Ansible + ssh tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ansible openssh-client rsync python3-pip
+
+      - name: Write SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/aws-ca
+          chmod 600 ~/.ssh/aws-ca
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+
+      - name: Create CI inventory
+        run: |
+          cat > config/ansible/inventory.cicd.ini <<EOF2
+          [web]
+          ec2 ansible_host=${EC2_HOST} ansible_user=${EC2_USER} ansible_ssh_private_key_file=~/.ssh/aws-ca
+          EOF2
+
+      - name: Syntax check
+        run: ansible-playbook -i config/ansible/inventory.cicd.ini --syntax-check config/ansible/deploy_portfolio_flask.yml
+
+      - name: Deploy
+        run: ansible-playbook -i config/ansible/inventory.cicd.ini config/ansible/deploy_portfolio_flask.yml
+
+      - name: Smoke test
+        run: curl -sS "http://${EC2_HOST}/" | head -c 300
