@@ -1,37 +1,8 @@
-- name: Deploy Flask portfolio on EC2 (Gunicorn + Nginx)
-  hosts: web
-  become: true
-  vars:
-    repo_url: "{{ lookup('env', 'REPO_URL') }}"
+    
+    sed -i 's|repo_url: "{{ lookup('"'"'env'"'"', '"'"'REPO_URL'"'"') }}"|repo_url: https://github.com/SamXl-Codes/devops-aws-terraform-ansible-cicd.git|' deploy_portfolio_flask.yml
     app_module: "{{ lookup('env', 'APP_MODULE') | default('app:app', true) }}"
     app_user: app
-    app_group: app  # New: Shared group for permission fallback
-    app_dir: /opt/portfolio
-    venv_dir: /opt/portfolio/venv
-    gunicorn_bind: "127.0.0.1:8000"
-    service_name: portfolio
-    python_pkg: python3
-    pip_pkg: python3-pip
-    git_pkg: git
-    ansible_become_method: sudo
-    ansible_remote_tmp: /tmp/.ansible/tmp  # Fixed: use /tmp, not user home
-  pre_tasks:
-    - name: Ensure app user exists
-      ansible.builtin.user:
-        name: "{{ app_user }}"
-        create_home: yes
-        shell: /bin/bash
-        groups: "{{ app_group }}"  # Add to shared group
-        append: yes
-    - name: Add connection user to shared group
-      ansible.builtin.user:
-        name: ec2-user  # Connection user
-        groups: "{{ app_group }}"
-        append: yes
-    - name: Assert repo_url provided
-      ansible.builtin.assert:
-        that: repo_url is match("^(git@|https://).*")
-        fail_msg: "Set REPO_URL env var to your Git repo (HTTPS or SSH)."
+    aSet REPO_URL env var to your Git repo (HTTPS or SSH)."
     - name: Ensure remote tmp directory exists (in /tmp)
       ansible.builtin.file:
         path: /tmp/.ansible/tmp
@@ -76,13 +47,87 @@
         set -e
         {{ venv_dir }}/bin/pip install --upgrade pip setuptools wheel
       args:
+        chdir: l requirements if requirements.txt exists (as app user)
+-- name: Deploy Flask portfolio on EC2 (Gunicorn + Nginx)
+  hosts: web
+  become: true
+  vars:
+    repo_url: "{{ lookup('env', 'REPO_URL') }}"
+    app_module: "{{ lookup('env', 'APP_MODULE') | default('app:app', true) }}"
+    app_user: app
+    app_group: app
+    app_dir: /opt/portfolio
+    venv_dir: /opt/portfolio/venv
+    gunicorn_bind: "127.0.0.1:8000"
+    service_name: portfolio
+    python_pkg: python3
+    pip_pkg: python3-pip
+    git_pkg: git
+    ansible_become_method: sudo
+    ansible_remote_tmp: /tmp/.ansible/tmp
+  pre_tasks:
+    - name: Ensure app user exists
+      ansible.builtin.user:
+        name: "{{ app_user }}"
+        create_home: yes
+        shell: /bin/bash
+        groups: "{{ app_group }}"
+        append: yes
+    - name: Add connection user to shared group
+      ansible.builtin.user:
+        name: ec2-user
+        groups: "{{ app_group }}"
+        append: yes
+    - name: Assert repo_url provided
+      ansible.builtin.assert:
+        that: repo_url is match("^(git@|https://).*")
+        fail_msg: "Set REPO_URL env var to your Git repo (HTTPS or SSH)."
+    - name: Ensure remote tmp directory exists (in /tmp)
+      ansible.builtin.file:
+        path: /tmp/.ansible/tmp
+        state: directory
+        mode: "1777"
+        owner: root
+        group: root
+  tasks:
+    - name: Install system packages
+      ansible.builtin.yum:
+        name:
+          - "{{ python_pkg }}"
+          - "{{ pip_pkg }}"
+          - "{{ git_pkg }}"
+          - nginx
+          - acl
+        state: present
+        update_cache: yes
+    - name: Create app directory
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: "0755"
+    - name: Clone/update repo (as app user)
+      become_user: "{{ app_user }}"
+      ansible.builtin.git:
+        repo: "{{ repo_url }}"
+        dest: "{{ app_dir }}"
+        version: "HEAD"
+        force: yes
+        update: yes
+    - name: Create venv (as app user)
+      become_user: "{{ app_user }}"
+      ansible.builtin.command: "{{ python_pkg }} -m venv {{ venv_dir }}"
+      args:
+        creates: "{{ venv_dir }}/bin/activate"
+    - name: Upgrade pip/setuptools/wheel (as app user)
+      become_user: "{{ app_user }}"
+      ansible.builtin.shell: |
+        set -e
+        {{ venv_dir }}/bin/pip install --upgrade pip setuptools wheel
+      args:
         chdir: "{{ app_dir }}"
     - name: Install requirements if requirements.txt exists (as app user)
-- name: Install Gunicorn in venv
-  ansible.builtin.pip:
-    name: gunicorn
-    virtualenv: /opt/portfolio/venv
-    executable: /opt/portfolio/venv/bin/pip
       become_user: "{{ app_user }}"
       ansible.builtin.shell: |
         set -e
@@ -103,7 +148,7 @@
           After=network.target
           [Service]
           User={{ app_user }}
-          Group={{ app_group }}  # Use shared group
+          Group={{ app_group }}
           WorkingDirectory={{ app_dir }}
           Environment="PATH={{ venv_dir }}/bin"
           ExecStart={{ venv_dir }}/bin/gunicorn --bind {{ gunicorn_bind }} {{ app_module }}
@@ -162,3 +207,5 @@
     - name: Show public HTTP health
       ansible.builtin.debug:
         var: hc_http.content
+
+
