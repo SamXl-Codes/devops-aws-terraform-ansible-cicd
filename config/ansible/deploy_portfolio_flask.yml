@@ -83,7 +83,6 @@
     name: gunicorn
     virtualenv: /opt/portfolio/venv
     executable: /opt/portfolio/venv/bin/pip
-    become_user: app
       become_user: "{{ app_user }}"
       ansible.builtin.shell: |
         set -e
