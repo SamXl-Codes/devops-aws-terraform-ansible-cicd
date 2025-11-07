@@ -5,6 +5,7 @@
     repo_url: "{{ lookup('env', 'REPO_URL') }}"
     app_module: "{{ lookup('env', 'APP_MODULE') | default('app:app', true) }}"
     app_user: app
+    app_group: app  # New: Shared group for permission fallback
     app_dir: /opt/portfolio
     venv_dir: /opt/portfolio/venv
     gunicorn_bind: "127.0.0.1:8000"
@@ -13,44 +14,49 @@
     pip_pkg: python3-pip
     git_pkg: git
     ansible_become_method: sudo
-    ansible_remote_tmp: /tmp/.ansible/tmp   # Fixed: use /tmp, not user home
-
+    ansible_remote_tmp: /tmp/.ansible/tmp  # Fixed: use /tmp, not user home
   pre_tasks:
     - name: Ensure app user exists
       ansible.builtin.user:
         name: "{{ app_user }}"
         create_home: yes
         shell: /bin/bash
-
+        groups: "{{ app_group }}"  # Add to shared group
+        append: yes
+    - name: Add connection user to shared group
+      ansible.builtin.user:
+        name: ec2-user  # Connection user
+        groups: "{{ app_group }}"
+        append: yes
     - name: Assert repo_url provided
       ansible.builtin.assert:
         that: repo_url is match("^(git@|https://).*")
         fail_msg: "Set REPO_URL env var to your Git repo (HTTPS or SSH)."
-
     - name: Ensure remote tmp directory exists (in /tmp)
       ansible.builtin.file:
         path: /tmp/.ansible/tmp
         state: directory
-        mode: "1777"
-
+        mode: "1777"  # World-writable with sticky bit
+        owner: root
+        group: root
   tasks:
     - name: Install system packages
-      ansible.builtin.package:
+      ansible.builtin.yum:  # Use yum for Amazon Linux compatibility
         name:
           - "{{ python_pkg }}"
           - "{{ pip_pkg }}"
           - "{{ git_pkg }}"
           - nginx
+          - acl  # New: Install acl for setfacl support
         state: present
-
+        update_cache: yes
     - name: Create app directory
       ansible.builtin.file:
         path: "{{ app_dir }}"
         state: directory
         owner: "{{ app_user }}"
-        group: "{{ app_user }}"
+        group: "{{ app_group }}"  # Use shared group
         mode: "0755"
-
     - name: Clone/update repo (as app user)
       become_user: "{{ app_user }}"
       ansible.builtin.git:
@@ -59,13 +65,11 @@
         version: "HEAD"
         force: yes
         update: yes
-
     - name: Create venv (as app user)
       become_user: "{{ app_user }}"
       ansible.builtin.command: "{{ python_pkg }} -m venv {{ venv_dir }}"
       args:
         creates: "{{ venv_dir }}/bin/activate"
-
     - name: Upgrade pip/setuptools/wheel (as app user)
       become_user: "{{ app_user }}"
       ansible.builtin.shell: |
@@ -73,7 +77,6 @@
         {{ venv_dir }}/bin/pip install --upgrade pip setuptools wheel
       args:
         chdir: "{{ app_dir }}"
-
     - name: Install requirements if requirements.txt exists (as app user)
       become_user: "{{ app_user }}"
       ansible.builtin.shell: |
@@ -85,7 +88,6 @@
         fi
       args:
         chdir: "{{ app_dir }}"
-
     - name: Create systemd service for Gunicorn
       ansible.builtin.copy:
         dest: "/etc/systemd/system/{{ service_name }}.service"
@@ -94,26 +96,22 @@
           [Unit]
           Description=Gunicorn for {{ service_name }}
           After=network.target
-
           [Service]
           User={{ app_user }}
-          Group={{ app_user }}
+          Group={{ app_group }}  # Use shared group
           WorkingDirectory={{ app_dir }}
           Environment="PATH={{ venv_dir }}/bin"
           ExecStart={{ venv_dir }}/bin/gunicorn --bind {{ gunicorn_bind }} {{ app_module }}
           Restart=always
           RestartSec=5
-
           [Install]
           WantedBy=multi-user.target
-
     - name: Reload systemd and enable+start service
       ansible.builtin.systemd:
         name: "{{ service_name }}"
         daemon_reload: yes
         state: restarted
         enabled: yes
-
     - name: Nginx reverse proxy config
       ansible.builtin.copy:
         dest: /etc/nginx/conf.d/portfolio.conf
@@ -123,7 +121,6 @@
             listen 80 default_server;
             server_name _;
             client_max_body_size 20m;
-
             location / {
               proxy_pass http://{{ gunicorn_bind }};
               proxy_set_header Host $host;
@@ -132,38 +129,31 @@
               proxy_set_header X-Forwarded-Proto $scheme;
             }
           }
-
     - name: Test Nginx config
       ansible.builtin.command: nginx -t
       register: nginx_test
       changed_when: false
-
     - name: Show Nginx test output
       ansible.builtin.debug:
         var: nginx_test.stdout_lines
-
     - name: Reload Nginx
       ansible.builtin.service:
         name: nginx
         state: reloaded
         enabled: yes
-
     - name: Health check over localhost (Gunicorn)
       ansible.builtin.shell: "curl -fsS http://{{ gunicorn_bind }} | head -c 200 || true"
       register: hc_local
       changed_when: false
-
     - name: Show localhost health check
       ansible.builtin.debug:
         var: hc_local.stdout
-
     - name: Health check via Nginx
       ansible.builtin.uri:
         url: "http://127.0.0.1/"
         return_content: true
       register: hc_http
       failed_when: false
-
     - name: Show public HTTP health
       ansible.builtin.debug:
         var: hc_http.content
