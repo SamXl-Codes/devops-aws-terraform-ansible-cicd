@@ -13,21 +13,25 @@
     pip_pkg: python3-pip
     git_pkg: git
     ansible_become_method: sudo
-    ansible_remote_tmp: "/home/{{ app_user }}/.ansible/tmp"   # <— key fix
+    ansible_remote_tmp: /tmp/.ansible/tmp   # Fixed: use /tmp, not user home
 
   pre_tasks:
+    - name: Ensure app user exists
+      ansible.builtin.user:
+        name: "{{ app_user }}"
+        create_home: yes
+        shell: /bin/bash
+
     - name: Assert repo_url provided
       ansible.builtin.assert:
         that: repo_url is match("^(git@|https://).*")
         fail_msg: "Set REPO_URL env var to your Git repo (HTTPS or SSH)."
 
-    - name: Ensure remote tmp directory for app user exists
+    - name: Ensure remote tmp directory exists (in /tmp)
       ansible.builtin.file:
-        path: "/home/{{ app_user }}/.ansible/tmp"
+        path: /tmp/.ansible/tmp
         state: directory
-        owner: "{{ app_user }}"
-        group: "{{ app_user }}"
-        mode: "0700"
+        mode: "1777"
 
   tasks:
     - name: Install system packages
@@ -38,12 +42,6 @@
           - "{{ git_pkg }}"
           - nginx
         state: present
-
-    - name: Ensure app user exists
-      ansible.builtin.user:
-        name: "{{ app_user }}"
-        create_home: yes
-        shell: /bin/bash
 
     - name: Create app directory
       ansible.builtin.file:
@@ -73,7 +71,8 @@
       ansible.builtin.shell: |
         set -e
         {{ venv_dir }}/bin/pip install --upgrade pip setuptools wheel
-      args: { chdir: "{{ app_dir }}" }
+      args:
+        chdir: "{{ app_dir }}"
 
     - name: Install requirements if requirements.txt exists (as app user)
       become_user: "{{ app_user }}"
@@ -84,7 +83,8 @@
         else
           {{ venv_dir }}/bin/pip install flask gunicorn
         fi
-      args: { chdir: "{{ app_dir }}" }
+      args:
+        chdir: "{{ app_dir }}"
 
     - name: Create systemd service for Gunicorn
       ansible.builtin.copy:
