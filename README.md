@@ -55,3 +55,4 @@ GitHub Actions Workflow
        └── Verifies deployment with smoke test (curl)
 FINAL GREEN RUN
 OPEN SSH FOR FINAL GREEN
+Temporary SSH open for green run
