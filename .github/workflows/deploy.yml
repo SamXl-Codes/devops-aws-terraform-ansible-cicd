@@ -1,5 +1,4 @@
 name: Deploy Portfolio App
-
 on:
   push:
     branches: [ main ]
@@ -35,12 +34,12 @@ jobs:
         run: |
           set -e
           echo "Checking required secrets..."
-          test -n "${{ secrets.AWS_ACCESS_KEY_ID }}"     || (echo "AWS_ACCESS_KEY_ID missing"     && exit 1)
+          test -n "${{ secrets.AWS_ACCESS_KEY_ID }}" || (echo "AWS_ACCESS_KEY_ID missing" && exit 1)
           test -n "${{ secrets.AWS_SECRET_ACCESS_KEY }}" || (echo "AWS_SECRET_ACCESS_KEY missing" && exit 1)
-          test -n "${{ secrets.SSH_PRIVATE_KEY }}"       || (echo "SSH_PRIVATE_KEY missing"       && exit 1)
-          test -n "${{ secrets.EC2_HOST }}"              || (echo "EC2_HOST missing"              && exit 1)
-          test -n "${{ secrets.SECURITY_GROUP_ID }}"     || (echo "SECURITY_GROUP_ID missing"     && exit 1)
-          test -n "${{ secrets.PUBLIC_KEY_BASE64 }}"     || (echo "PUBLIC_KEY_BASE64 missing"     && exit 1)
+          test -n "${{ secrets.SSH_PRIVATE_KEY }}" || (echo "SSH_PRIVATE_KEY missing" && exit 1)
+          test -n "${{ secrets.EC2_HOST }}" || (echo "EC2_HOST missing" && exit 1)
+          test -n "${{ secrets.SECURITY_GROUP_ID }}" || (echo "SECURITY_GROUP_ID missing" && exit 1)
+          test -n "${{ secrets.PUBLIC_KEY_BASE64 }}" || (echo "PUBLIC_KEY_BASE64 missing" && exit 1)
           echo "All secrets are present!"
 
       # ──────── TERRAFORM ────────
@@ -71,30 +70,47 @@ jobs:
           TF_VAR_public_key_base64: ${{ secrets.PUBLIC_KEY_BASE64 }}
         run: terraform apply -auto-approve plan.tfout
 
-      # ──────── ANSIBLE DEPLOY ────────
+      # ──────── ANSIBLE DEPLOY (FIXED) ────────
       - name: Deploy with Ansible
         env:
           ANSIBLE_HOST_KEY_CHECKING: False
         run: |
-          # Create SSH key
+          # === Create SSH key ===
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > key.pem
           chmod 400 key.pem
-
-          # Debug (you will see this in logs)
           echo "SSH key written ($(wc -l < key.pem) lines)"
 
-          # Create inventory
+          # === Create inventory ===
           cat > inventory.ini <<EOF
           [web]
           ${{ secrets.EC2_HOST }} ansible_user=ec2-user ansible_ssh_private_key_file=$(pwd)/key.pem ansible_become=true ansible_remote_tmp=/tmp/.ansible/tmp
           EOF
 
-          # Run playbook
-          ansible-playbook -i inventory.ini config/ansible/deploy_portfolio_flask.yml --ssh-common-args="-o StrictHostKeyChecking=no"
+          echo "=== INVENTORY ==="
+          cat inventory.ini
 
-          # Cleanup
+          # === SET REPO URL (THIS FIXES THE ERROR) ===
+          REPO_URL="https://github.com/SamXl-Codes/devops-aws-terraform-ansible-cicd.git"
+          echo "Deploying app from: $REPO_URL"
+
+          # === Run Ansible with repo_url passed explicitly ===
+          ansible-playbook \
+            -i inventory.ini \
+            config/ansible/deploy_portfolio_flask.yml \
+            --ssh-common-args="-o StrictHostKeyChecking=no" \
+            -e "repo_url=$REPO_URL"
+
+          # === Show success URL ===
+          echo ""
+          echo "Portfolio App Deployed!"
+          echo "http://${{ secrets.EC2_HOST }}"
+          echo ""
+
+          # === Cleanup ===
           rm -f key.pem inventory.ini
 
+      # ──────── FINAL CLEANUP (ALWAYS RUN) ────────
       - name: Final cleanup
         if: always()
-        run: rm -f key.pem inventory.ini
+        run: |
+          rm -f key.pem inventory.ini || true
