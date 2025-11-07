@@ -78,6 +78,12 @@
       args:
         chdir: "{{ app_dir }}"
     - name: Install requirements if requirements.txt exists (as app user)
+- name: Install Gunicorn in venv
+  ansible.builtin.pip:
+    name: gunicorn
+    virtualenv: /opt/portfolio/venv
+    executable: /opt/portfolio/venv/bin/pip
+    become_user: app
       become_user: "{{ app_user }}"
       ansible.builtin.shell: |
         set -e
