@@ -1,19 +1,14 @@
-from flask import Flask, send_from_directory
-import os
-app = Flask(__name__, static_folder='static')
+from flask import Flask, render_template, send_from_directory
+
+app = Flask(__name__, static_folder='static', template_folder='templates')
 
 @app.route('/')
-def index():
-    # serve index.html from repo root or static/
-    if os.path.exists('index.html'):
-        return send_from_directory('.', 'index.html')
-    return send_from_directory('static', 'index.html')
+def home():
+    return render_template('index.html')
 
-@app.route('/<path:path>')
-def static_proxy(path):
-    # serve other assets
-    if os.path.exists(path):
-        return send_from_directory('.', path)
+@app.route('/static/<path:path>')
+def send_static(path):
     return send_from_directory('static', path)
 
-# gunicorn runs: app:app
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8000)
