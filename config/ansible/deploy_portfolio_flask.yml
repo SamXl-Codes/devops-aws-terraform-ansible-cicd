@@ -1,211 +1,94 @@
-    
-    sed -i 's|repo_url: "{{ lookup('"'"'env'"'"', '"'"'REPO_URL'"'"') }}"|repo_url: https://github.com/SamXl-Codes/devops-aws-terraform-ansible-cicd.git|' deploy_portfolio_flask.yml
-    app_module: "{{ lookup('env', 'APP_MODULE') | default('app:app', true) }}"
-    app_user: app
-    aSet REPO_URL env var to your Git repo (HTTPS or SSH)."
-    - name: Ensure remote tmp directory exists (in /tmp)
-      ansible.builtin.file:
-        path: /tmp/.ansible/tmp
-        state: directory
-        mode: "1777"  # World-writable with sticky bit
-        owner: root
-        group: root
-  tasks:
-    - name: Install system packages
-      ansible.builtin.yum:  # Use yum for Amazon Linux compatibility
-        name:
-          - "{{ python_pkg }}"
-          - "{{ pip_pkg }}"
-          - "{{ git_pkg }}"
-          - nginx
-          - acl  # New: Install acl for setfacl support
-        state: present
-        update_cache: yes
-    - name: Create app directory
-      ansible.builtin.file:
-        path: "{{ app_dir }}"
-        state: directory
-        owner: "{{ app_user }}"
-        group: "{{ app_group }}"  # Use shared group
-        mode: "0755"
-    - name: Clone/update repo (as app user)
-      become_user: "{{ app_user }}"
-      ansible.builtin.git:
-        repo: "{{ repo_url }}"
-        dest: "{{ app_dir }}"
-        version: "HEAD"
-        force: yes
-        update: yes
-    - name: Create venv (as app user)
-      become_user: "{{ app_user }}"
-      ansible.builtin.command: "{{ python_pkg }} -m venv {{ venv_dir }}"
-      args:
-        creates: "{{ venv_dir }}/bin/activate"
-    - name: Upgrade pip/setuptools/wheel (as app user)
-      become_user: "{{ app_user }}"
-      ansible.builtin.shell: |
-        set -e
-        {{ venv_dir }}/bin/pip install --upgrade pip setuptools wheel
-      args:
-        chdir: l requirements if requirements.txt exists (as app user)
--- name: Deploy Flask portfolio on EC2 (Gunicorn + Nginx)
+---
+- name: Deploy Flask portfolio on EC2 (Gunicorn + Nginx)
   hosts: web
   become: true
   vars:
-    repo_url: "{{ lookup('env', 'REPO_URL') }}"
-    app_module: "{{ lookup('env', 'APP_MODULE') | default('app:app', true) }}"
     app_user: app
-    app_group: app
     app_dir: /opt/portfolio
     venv_dir: /opt/portfolio/venv
-    gunicorn_bind: "127.0.0.1:8000"
-    service_name: portfolio
-    python_pkg: python3
-    pip_pkg: python3-pip
-    git_pkg: git
-    ansible_become_method: sudo
-    ansible_remote_tmp: /tmp/.ansible/tmp
-  pre_tasks:
-    - name: Ensure app user exists
-      ansible.builtin.user:
-        name: "{{ app_user }}"
-        create_home: yes
-        shell: /bin/bash
-        groups: "{{ app_group }}"
-        append: yes
-    - name: Add connection user to shared group
-      ansible.builtin.user:
-        name: ec2-user
-        groups: "{{ app_group }}"
-        append: yes
-    - name: Assert repo_url provided
-      ansible.builtin.assert:
-        that: repo_url is match("^(git@|https://).*")
-        fail_msg: "Set REPO_URL env var to your Git repo (HTTPS or SSH)."
-    - name: Ensure remote tmp directory exists (in /tmp)
-      ansible.builtin.file:
-        path: /tmp/.ansible/tmp
-        state: directory
-        mode: "1777"
-        owner: root
-        group: root
+    repo_url: https://github.com/SamXl-Codes/devops-aws-terraform-ansible-cicd.git
+
   tasks:
-    - name: Install system packages
-      ansible.builtin.yum:
+    - name: Install required packages
+      yum:
         name:
-          - "{{ python_pkg }}"
-          - "{{ pip_pkg }}"
-          - "{{ git_pkg }}"
+          - python3
+          - python3-pip
+          - git
           - nginx
-          - acl
         state: present
-        update_cache: yes
+
+    - name: Create app user
+      user:
+        name: "{{ app_user }}"
+        shell: /bin/bash
+
     - name: Create app directory
-      ansible.builtin.file:
+      file:
         path: "{{ app_dir }}"
         state: directory
         owner: "{{ app_user }}"
-        group: "{{ app_group }}"
-        mode: "0755"
-    - name: Clone/update repo (as app user)
-      become_user: "{{ app_user }}"
-      ansible.builtin.git:
+        group: "{{ app_user }}"
+        mode: '0755'
+
+    - name: Clone repository
+      git:
         repo: "{{ repo_url }}"
         dest: "{{ app_dir }}"
-        version: "HEAD"
+        version: main
         force: yes
-        update: yes
-    - name: Create venv (as app user)
       become_user: "{{ app_user }}"
-      ansible.builtin.command: "{{ python_pkg }} -m venv {{ venv_dir }}"
+
+    - name: Create virtual environment
+      command: python3 -m venv "{{ venv_dir }}"
       args:
         creates: "{{ venv_dir }}/bin/activate"
-    - name: Upgrade pip/setuptools/wheel (as app user)
       become_user: "{{ app_user }}"
-      ansible.builtin.shell: |
-        set -e
-        {{ venv_dir }}/bin/pip install --upgrade pip setuptools wheel
-      args:
-        chdir: "{{ app_dir }}"
-    - name: Install requirements if requirements.txt exists (as app user)
+
+    - name: Install Python packages
+      pip:
+        requirements: "{{ app_dir }}/requirements.txt"
+        virtualenv: "{{ venv_dir }}"
       become_user: "{{ app_user }}"
-      ansible.builtin.shell: |
-        set -e
-        if [ -f requirements.txt ]; then
-          {{ venv_dir }}/bin/pip install -r requirements.txt
-        else
-          {{ venv_dir }}/bin/pip install flask gunicorn
-        fi
-      args:
-        chdir: "{{ app_dir }}"
-    - name: Create systemd service for Gunicorn
-      ansible.builtin.copy:
-        dest: "/etc/systemd/system/{{ service_name }}.service"
-        mode: "0644"
-        content: |
-          [Unit]
-          Description=Gunicorn for {{ service_name }}
-          After=network.target
-          [Service]
-          User={{ app_user }}
-          Group={{ app_group }}
-          WorkingDirectory={{ app_dir }}
-          Environment="PATH={{ venv_dir }}/bin"
-          ExecStart={{ venv_dir }}/bin/gunicorn --bind {{ gunicorn_bind }} {{ app_module }}
-          Restart=always
-          RestartSec=5
-          [Install]
-          WantedBy=multi-user.target
-    - name: Reload systemd and enable+start service
-      ansible.builtin.systemd:
-        name: "{{ service_name }}"
-        daemon_reload: yes
-        state: restarted
-        enabled: yes
-    - name: Nginx reverse proxy config
-      ansible.builtin.copy:
+      ignore_errors: yes
+
+    - name: Install Gunicorn
+      pip:
+        name: gunicorn
+        virtualenv: "{{ venv_dir }}"
+      become_user: "{{ app_user }}"
+
+    - name: Deploy Gunicorn service
+      template:
+        src: gunicorn.service.j2
+        dest: /etc/systemd/system/portfolio.service
+        mode: '0644'
+      notify: restart portfolio
+
+    - name: Deploy Nginx config
+      template:
+        src: nginx.conf.j2
         dest: /etc/nginx/conf.d/portfolio.conf
-        mode: "0644"
-        content: |
-          server {
-            listen 80 default_server;
-            server_name _;
-            client_max_body_size 20m;
-            location / {
-              proxy_pass http://{{ gunicorn_bind }};
-              proxy_set_header Host $host;
-              proxy_set_header X-Real-IP $remote_addr;
-              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-              proxy_set_header X-Forwarded-Proto $scheme;
-            }
-          }
-    - name: Test Nginx config
-      ansible.builtin.command: nginx -t
-      register: nginx_test
-      changed_when: false
-    - name: Show Nginx test output
-      ansible.builtin.debug:
-        var: nginx_test.stdout_lines
-    - name: Reload Nginx
-      ansible.builtin.service:
+      notify: reload nginx
+
+    - name: Enable and start services
+      systemd:
+        name: "{{ item }}"
+        enabled: yes
+        state: started
+        daemon_reload: yes
+      loop:
+        - portfolio
+        - nginx
+
+  handlers:
+    - name: restart portfolio
+      systemd:
+        name: portfolio
+        state: restarted
+        daemon_reload: yes
+
+    - name: reload nginx
+      systemd:
         name: nginx
         state: reloaded
-        enabled: yes
-    - name: Health check over localhost (Gunicorn)
-      ansible.builtin.shell: "curl -fsS http://{{ gunicorn_bind }} | head -c 200 || true"
-      register: hc_local
-      changed_when: false
-    - name: Show localhost health check
-      ansible.builtin.debug:
-        var: hc_local.stdout
-    - name: Health check via Nginx
-      ansible.builtin.uri:
-        url: "http://127.0.0.1/"
-        return_content: true
-      register: hc_http
-      failed_when: false
-    - name: Show public HTTP health
-      ansible.builtin.debug:
-        var: hc_http.content
-
-
