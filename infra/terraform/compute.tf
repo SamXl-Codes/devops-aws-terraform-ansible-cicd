@@ -19,14 +19,21 @@ data "aws_ami" "al2023" {
   }
 }
 
-# EC2 instance
+# EC2 instance – 30 GB DISK (fixes "No space left" forever)
 resource "aws_instance" "web" {
   ami                         = data.aws_ami.al2023.id
-  instance_type               = var.instance_type
+  instance_type               = "t3.micro"
   subnet_id                   = aws_subnet.public_a.id
   vpc_security_group_ids      = [aws_security_group.web_sg.id]
   key_name                    = aws_key_pair.main.key_name
   associate_public_ip_address = true
+
+  root_block_device {
+    volume_size           = 30
+    volume_type           = "gp3"
+    encrypted             = true
+    delete_on_termination = true
+  }
 
   tags = {
     Name = "ca-ec2"
