@@ -1,34 +1,20 @@
-# security.tf – FINAL 100% WORKING (IPv4 only)
-data "http" "github_actions_ips" {
-  url = "https://api.github.com/meta"
-}
-
-# Filter ONLY IPv4 addresses from GitHub Actions
-locals {
-  github_ipv4 = [
-    for ip in jsondecode(data.http.github_actions_ips.response_body).actions :
-    ip if can(cidrhost("${ip}/32", 0))
-  ]
-}
-
+# security.tf – FINAL 3 RULES ONLY – NO THROTTLING
 resource "aws_security_group" "web_sg" {
   name        = "ca-web-sg"
-  description = "Allow SSH from GitHub Actions + HTTP from world"
+  description = "HTTP + SSH open for final run"
   vpc_id      = aws_vpc.main.id
 
-  tags = {
-    Name = "ca-web-sg"
-  }
+  tags = { Name = "ca-web-sg" }
 }
 
-resource "aws_security_group_rule" "github_ssh" {
-  type                     = "ingress"
-  from_port                = 22
-  to_port                  = 22
-  protocol                 = "tcp"
-  cidr_blocks              = local.github_ipv4
-  security_group_id        = aws_security_group.web_sg.id
-  description              = "GitHub Actions runners IPv4"
+# SSH OPEN TO WORLD (just for this run)
+resource "aws_security_group_rule" "ssh_world" {
+  type              = "ingress"
+  from_port         = 22
+  to_port           = 22
+  protocol          = "tcp"
+  cidr_blocks       = ["0.0.0.0/0"]
+  security_group_id = aws_security_group.web_sg.id
 }
 
 resource "aws_security_group_rule" "http_world" {
