@@ -19,27 +19,25 @@
           - docker
         state: present
 
-    - name: Create app user and add to docker group
+    - name: Create app user
       user:
         name: "{{ app_user }}"
         shell: /bin/bash
-        groups: docker
-        append: yes
 
-    - name: Remove old deployment (if present)
+    - name: Remove old deployment
       file:
         path: "{{ app_dir }}"
         state: absent
 
-    - name: Recreate app directory with correct ownership
+    - name: Create app directory with correct ownership
       file:
         path: "{{ app_dir }}"
         state: directory
         owner: "{{ app_user }}"
         group: "{{ app_user }}"
-        mode: "0755"
+        mode: '0755'
 
-    - name: Clone repository fresh every time
+    - name: Clone repository (safe + fresh every time)
       ansible.builtin.git:
         repo: "{{ repo_url }}"
         dest: "{{ app_dir }}"
