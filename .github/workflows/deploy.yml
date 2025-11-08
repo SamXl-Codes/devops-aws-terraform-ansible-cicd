@@ -18,7 +18,7 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.9.0
-          terraform_wrapper: false  # Important: allows us to capture outputs
+          terraform_wrapper: false  # CRITICAL: This allows us to get outputs
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -70,14 +70,27 @@ jobs:
           TF_VAR_public_key_base64: ${{ secrets.PUBLIC_KEY_BASE64 }}
         run: terraform apply -auto-approve plan.tfout
 
-      # ──────── NEW: WAIT FOR EC2 TO BE SSH-READY ────────
+      # ──────── GET DYNAMIC IP FROM TERRAFORM ────────
+      - name: Get EC2 IP from Terraform
+        id: tf_output
+        working-directory: infra/terraform
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          PUBLIC_IP=$(terraform output -raw public_ip)
+          echo "EC2_HOST=$PUBLIC_IP" >> $GITHUB_OUTPUT
+          echo "✓ EC2 Public IP: $PUBLIC_IP"
+
+      # ──────── WAIT FOR EC2 TO BE SSH-READY ────────
       - name: Wait for EC2 instance to be ready for SSH
+        env:
+          EC2_HOST: ${{ steps.tf_output.outputs.EC2_HOST }}
         run: |
           # Create SSH key first
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > key.pem
           chmod 400 key.pem
           
-          EC2_HOST="${{ secrets.EC2_HOST }}"
           echo "Waiting for EC2 instance at $EC2_HOST to be ready for SSH..."
           
           max_attempts=36  # 6 minutes total (36 * 10 seconds)
@@ -95,7 +108,7 @@ jobs:
                -o BatchMode=yes \
                ec2-user@$EC2_HOST 'echo "SSH Ready"' 2>/dev/null; then
               echo "✓ SSH connection successful! Instance is ready."
-              break
+              exit 0
             fi
             
             if [ $attempt -eq $max_attempts ]; then
@@ -113,17 +126,18 @@ jobs:
             sleep 10
           done
 
-      # ──────── ANSIBLE DEPLOY (FIXED FOR AL2023) ────────
+      # ──────── ANSIBLE DEPLOY ────────
       - name: Deploy with Ansible
         env:
           ANSIBLE_HOST_KEY_CHECKING: False
+          EC2_HOST: ${{ steps.tf_output.outputs.EC2_HOST }}
         run: |
           # SSH key already created in previous step
           
-          # === Create inventory (fixed tmp path, no app user) ===
+          # === Create inventory using DYNAMIC IP ===
           cat > inventory.ini <<EOF
           [web]
-          ${{ secrets.EC2_HOST }} ansible_user=ec2-user ansible_ssh_private_key_file=$(pwd)/key.pem ansible_become=true ansible_remote_tmp=/home/ec2-user/.ansible/tmp
+          $EC2_HOST ansible_user=ec2-user ansible_ssh_private_key_file=$(pwd)/key.pem ansible_become=true ansible_remote_tmp=/home/ec2-user/.ansible/tmp
           EOF
 
           echo "=== INVENTORY ==="
@@ -146,7 +160,7 @@ jobs:
           echo "   ✓ DEPLOYMENT SUCCESSFUL!"
           echo "════════════════════════════════════════"
           echo "Your app is live at:"
-          echo "👉 http://${{ secrets.EC2_HOST }}"
+          echo " http://$EC2_HOST"
           echo "════════════════════════════════════════"
           echo ""
 
