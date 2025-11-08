@@ -1,119 +1,157 @@
----
-- name: Deploy Flask portfolio on EC2 (Gunicorn + Nginx)
-  hosts: web
-  gather_facts: no  # Don't gather facts immediately
-  become: yes
+name: Deploy Portfolio App
+on:
+  push:
+    branches: [ main ]
 
-  tasks:
-    # === Wait for SSH to be available ===
-    - name: Wait for SSH connection to be available
-      wait_for_connection:
-        connect_timeout: 20
-        sleep: 5
-        delay: 5
-        timeout: 300
-      register: ssh_wait
-      retries: 3
-      delay: 10
-      until: ssh_wait is success
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
 
-    # === Now gather facts ===
-    - name: Gather facts
-      setup:
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Display connection info
-      debug:
-        msg: "Successfully connected to {{ inventory_hostname }}"
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
+          terraform_wrapper: false  # Important: allows us to capture outputs
 
-    # === Update system ===
-    - name: Update all packages (Amazon Linux 2)
-      yum:
-        name: '*'
-        state: latest
-        update_cache: yes
-      when: ansible_distribution == "Amazon"
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-    # === Install dependencies ===
-    - name: Install Python 3, pip, git, and development tools
-      yum:
-        name:
-          - python3
-          - python3-pip
-          - git
-          - python3-devel
-          - gcc
-        state: present
+      - name: Install Ansible + AWS CLI
+        run: |
+          python -m pip install --upgrade pip
+          pip install ansible-core==2.16.* awscli
 
-    # === Install Nginx ===
-    - name: Install Nginx
-      amazon.aws.ec2_instance:
-        state: present
-      ignore_errors: yes  # Fallback if amazon.aws collection not available
-      
-    - name: Install Nginx (fallback)
-      yum:
-        name: nginx
-        state: present
-        enablerepo: nginx
+      # ──────── SECRET VALIDATION ────────
+      - name: Validate all secrets exist
+        run: |
+          set -e
+          echo "Checking required secrets..."
+          test -n "${{ secrets.AWS_ACCESS_KEY_ID }}" || (echo "AWS_ACCESS_KEY_ID missing" && exit 1)
+          test -n "${{ secrets.AWS_SECRET_ACCESS_KEY }}" || (echo "AWS_SECRET_ACCESS_KEY missing" && exit 1)
+          test -n "${{ secrets.SSH_PRIVATE_KEY }}" || (echo "SSH_PRIVATE_KEY missing" && exit 1)
+          test -n "${{ secrets.SECURITY_GROUP_ID }}" || (echo "SECURITY_GROUP_ID missing" && exit 1)
+          test -n "${{ secrets.PUBLIC_KEY_BASE64 }}" || (echo "PUBLIC_KEY_BASE64 missing" && exit 1)
+          echo "All secrets are present!"
 
-    # === Clone repository ===
-    - name: Clone Flask application from GitHub
-      git:
-        repo: "{{ repo_url }}"
-        dest: /home/ec2-user/portfolio-app
-        version: main
-        force: yes
-      become: no
+      # ──────── TERRAFORM ────────
+      - name: Terraform Init
+        working-directory: infra/terraform
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          TF_VAR_security_group_id: ${{ secrets.SECURITY_GROUP_ID }}
+          TF_VAR_public_key_base64: ${{ secrets.PUBLIC_KEY_BASE64 }}
+        run: terraform init -backend=false
 
-    # === Install Python dependencies ===
-    - name: Install Python dependencies from requirements.txt
-      pip:
-        requirements: /home/ec2-user/portfolio-app/requirements.txt
-        executable: pip3
-      become: no
+      - name: Terraform Plan
+        working-directory: infra/terraform
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          TF_VAR_security_group_id: ${{ secrets.SECURITY_GROUP_ID }}
+          TF_VAR_public_key_base64: ${{ secrets.PUBLIC_KEY_BASE64 }}
+        run: terraform plan -out=plan.tfout
 
-    # === Configure Gunicorn ===
-    - name: Create Gunicorn systemd service
-      template:
-        src: templates/gunicorn.service.j2
-        dest: /etc/systemd/system/gunicorn.service
-      notify: Restart Gunicorn
+      - name: Terraform Apply
+        working-directory: infra/terraform
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          TF_VAR_security_group_id: ${{ secrets.SECURITY_GROUP_ID }}
+          TF_VAR_public_key_base64: ${{ secrets.PUBLIC_KEY_BASE64 }}
+        run: terraform apply -auto-approve plan.tfout
 
-    # === Configure Nginx ===
-    - name: Configure Nginx
-      template:
-        src: templates/nginx.conf.j2
-        dest: /etc/nginx/conf.d/portfolio.conf
-      notify: Restart Nginx
+      # ──────── NEW: WAIT FOR EC2 TO BE SSH-READY ────────
+      - name: Wait for EC2 instance to be ready for SSH
+        run: |
+          # Create SSH key first
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > key.pem
+          chmod 400 key.pem
+          
+          EC2_HOST="${{ secrets.EC2_HOST }}"
+          echo "Waiting for EC2 instance at $EC2_HOST to be ready for SSH..."
+          
+          max_attempts=36  # 6 minutes total (36 * 10 seconds)
+          attempt=0
+          
+          while [ $attempt -lt $max_attempts ]; do
+            attempt=$((attempt + 1))
+            echo "Attempt $attempt/$max_attempts: Checking SSH connectivity..."
+            
+            # Try SSH connection with timeout
+            if timeout 10 ssh -i key.pem \
+               -o StrictHostKeyChecking=no \
+               -o UserKnownHostsFile=/dev/null \
+               -o ConnectTimeout=5 \
+               -o BatchMode=yes \
+               ec2-user@$EC2_HOST 'echo "SSH Ready"' 2>/dev/null; then
+              echo "✓ SSH connection successful! Instance is ready."
+              break
+            fi
+            
+            if [ $attempt -eq $max_attempts ]; then
+              echo "✗ ERROR: Timeout after 6 minutes waiting for SSH"
+              echo "Debug: Attempting one final connection with verbose output..."
+              ssh -i key.pem -vvv \
+                -o StrictHostKeyChecking=no \
+                -o UserKnownHostsFile=/dev/null \
+                -o ConnectTimeout=10 \
+                ec2-user@$EC2_HOST 'echo test' || true
+              exit 1
+            fi
+            
+            echo "Instance not ready yet, waiting 10 seconds..."
+            sleep 10
+          done
 
-    - name: Remove default Nginx config
-      file:
-        path: /etc/nginx/conf.d/default.conf
-        state: absent
-      notify: Restart Nginx
+      # ──────── ANSIBLE DEPLOY (FIXED FOR AL2023) ────────
+      - name: Deploy with Ansible
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: False
+        run: |
+          # SSH key already created in previous step
+          
+          # === Create inventory (fixed tmp path, no app user) ===
+          cat > inventory.ini <<EOF
+          [web]
+          ${{ secrets.EC2_HOST }} ansible_user=ec2-user ansible_ssh_private_key_file=$(pwd)/key.pem ansible_become=true ansible_remote_tmp=/home/ec2-user/.ansible/tmp
+          EOF
 
-    # === Start services ===
-    - name: Enable and start Gunicorn
-      systemd:
-        name: gunicorn
-        state: started
-        enabled: yes
-        daemon_reload: yes
+          echo "=== INVENTORY ==="
+          cat inventory.ini
 
-    - name: Enable and start Nginx
-      systemd:
-        name: nginx
-        state: started
-        enabled: yes
+          # === SET REPO URL ===
+          REPO_URL="https://github.com/SamXl-Codes/devops-aws-terraform-ansible-cicd.git"
+          echo "Deploying from: $REPO_URL"
 
-  handlers:
-    - name: Restart Gunicorn
-      systemd:
-        name: gunicorn
-        state: restarted
-        daemon_reload: yes
+          # === Run Ansible ===
+          ansible-playbook \
+            -i inventory.ini \
+            config/ansible/deploy_portfolio_flask.yml \
+            --ssh-common-args="-o StrictHostKeyChecking=no" \
+            -e "repo_url=$REPO_URL"
 
-    - name: Restart Nginx
-      systemd:
-        name: nginx
-        state: restarted
+          # === Show success URL ===
+          echo ""
+          echo "════════════════════════════════════════"
+          echo "   ✓ DEPLOYMENT SUCCESSFUL!"
+          echo "════════════════════════════════════════"
+          echo "Your app is live at:"
+          echo "👉 http://${{ secrets.EC2_HOST }}"
+          echo "════════════════════════════════════════"
+          echo ""
+
+      # ──────── FINAL CLEANUP ────────
+      - name: Final cleanup
+        if: always()
+        run: |
+          rm -f key.pem inventory.ini || true
