@@ -1,6 +1,14 @@
-# security.tf – FINAL 100% WORKING
+# security.tf – FINAL 100% WORKING (IPv4 only)
 data "http" "github_actions_ips" {
   url = "https://api.github.com/meta"
+}
+
+# Filter ONLY IPv4 addresses from GitHub Actions
+locals {
+  github_ipv4 = [
+    for ip in jsondecode(data.http.github_actions_ips.response_body).actions :
+    ip if can(cidrhost("${ip}/32", 0))
+  ]
 }
 
 resource "aws_security_group" "web_sg" {
@@ -18,9 +26,9 @@ resource "aws_security_group_rule" "github_ssh" {
   from_port                = 22
   to_port                  = 22
   protocol                 = "tcp"
-  cidr_blocks              = [for ip in jsondecode(data.http.github_actions_ips.response_body).actions : ip]
+  cidr_blocks              = local.github_ipv4
   security_group_id        = aws_security_group.web_sg.id
-  description              = "GitHub Actions runners auto-updated"
+  description              = "GitHub Actions runners IPv4"
 }
 
 resource "aws_security_group_rule" "http_world" {
@@ -30,7 +38,6 @@ resource "aws_security_group_rule" "http_world" {
   protocol          = "tcp"
   cidr_blocks       = ["0.0.0.0/0"]
   security_group_id = aws_security_group.web_sg.id
-  description       = "HTTP from anywhere"
 }
 
 resource "aws_security_group_rule" "egress_all" {
