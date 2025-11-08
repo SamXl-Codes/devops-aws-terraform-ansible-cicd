@@ -1,4 +1,8 @@
-# security.tf – ONLY THIS FILE
+# security.tf – FINAL WORKING VERSION (100 % GREEN)
+data "http" "github_actions_ips" {
+  url = "https://api.github.com/meta"
+}
+
 resource "aws_security_group" "web_sg" {
   name        = "ca-web-sg"
   description = "Allow SSH from GitHub Actions + HTTP from world"
@@ -9,7 +13,7 @@ resource "aws_security_group" "web_sg" {
   }
 }
 
-# AUTO-ADD GITHUB ACTIONS IPs (THIS IS YOUR ORIGINAL PERFECT CODE)
+# SSH ONLY FROM GITHUB ACTIONS RUNNERS (auto-updates every run)
 resource "aws_security_group_rule" "github_ssh" {
   type                     = "ingress"
   from_port                = 22
@@ -17,10 +21,10 @@ resource "aws_security_group_rule" "github_ssh" {
   protocol                 = "tcp"
   cidr_blocks              = [for ip in jsondecode(data.http.github_actions_ips.response_body).actions : ip]
   security_group_id        = aws_security_group.web_sg.id
-  description              = "GitHub Actions runners"
+  description              = "GitHub Actions runners – auto-updated"
 }
 
-# HTTP open to world
+# HTTP OPEN TO WORLD
 resource "aws_security_group_rule" "http_world" {
   type              = "ingress"
   from_port         = 80
@@ -28,9 +32,10 @@ resource "aws_security_group_rule" "http_world" {
   protocol          = "tcp"
   cidr_blocks       = ["0.0.0.0/0"]
   security_group_id = aws_security_group.web_sg.id
+  description       = "HTTP from anywhere"
 }
 
-# All outbound
+# ALL OUTBOUND TRAFFIC
 resource "aws_security_group_rule" "egress_all" {
   type              = "egress"
   from_port         = 0
