@@ -1,4 +1,4 @@
-# security.tf – FINAL WORKING VERSION (100 % GREEN)
+# security.tf – FINAL 100% WORKING
 data "http" "github_actions_ips" {
   url = "https://api.github.com/meta"
 }
@@ -13,7 +13,6 @@ resource "aws_security_group" "web_sg" {
   }
 }
 
-# SSH ONLY FROM GITHUB ACTIONS RUNNERS (auto-updates every run)
 resource "aws_security_group_rule" "github_ssh" {
   type                     = "ingress"
   from_port                = 22
@@ -21,10 +20,9 @@ resource "aws_security_group_rule" "github_ssh" {
   protocol                 = "tcp"
   cidr_blocks              = [for ip in jsondecode(data.http.github_actions_ips.response_body).actions : ip]
   security_group_id        = aws_security_group.web_sg.id
-  description              = "GitHub Actions runners – auto-updated"
+  description              = "GitHub Actions runners auto-updated"
 }
 
-# HTTP OPEN TO WORLD
 resource "aws_security_group_rule" "http_world" {
   type              = "ingress"
   from_port         = 80
@@ -35,7 +33,6 @@ resource "aws_security_group_rule" "http_world" {
   description       = "HTTP from anywhere"
 }
 
-# ALL OUTBOUND TRAFFIC
 resource "aws_security_group_rule" "egress_all" {
   type              = "egress"
   from_port         = 0
