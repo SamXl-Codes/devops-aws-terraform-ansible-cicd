@@ -55,9 +55,24 @@
         creates: "{{ venv_dir }}/bin/activate"
       become_user: "{{ app_user }}"
 
+    - name: Check for requirements.txt location
+      stat:
+        path: "{{ item }}"
+      register: requirements_check
+      loop:
+        - "{{ app_dir }}/requirements.txt"
+        - "{{ app_dir }}/app/requirements.txt"
+      become_user: "{{ app_user }}"
+
+    - name: Set requirements path
+      set_fact:
+        requirements_path: "{{ item.item }}"
+      when: item.stat.exists
+      loop: "{{ requirements_check.results }}"
+
     - name: Install Python packages
       pip:
-        requirements: "{{ app_dir }}/requirements.txt"
+        requirements: "{{ requirements_path }}"
         virtualenv: "{{ venv_dir }}"
       become_user: "{{ app_user }}"
 
@@ -65,13 +80,29 @@
       template:
         src: gunicorn.service.j2
         dest: /etc/systemd/system/portfolio.service
+        mode: '0644'
       notify: restart portfolio
 
     - name: Deploy Nginx config
       template:
         src: nginx.conf.j2
         dest: /etc/nginx/conf.d/portfolio.conf
+        mode: '0644'
       notify: reload nginx
+
+    - name: Remove default Nginx config
+      file:
+        path: /etc/nginx/conf.d/default.conf
+        state: absent
+      notify: reload nginx
+
+    - name: Set proper permissions for app directory
+      file:
+        path: "{{ app_dir }}"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        recurse: yes
+        mode: '0755'
 
     - name: Enable and start services
       systemd:
@@ -89,8 +120,38 @@
       systemd:
         name: portfolio
         state: restarted
+        daemon_reload: yes
 
     - name: reload nginx
       systemd:
         name: nginx
         state: reloaded
+
+  post_tasks:
+    - name: Wait for portfolio service to be active
+      wait_for:
+        port: 8000
+        host: 127.0.0.1
+        delay: 5
+        timeout: 30
+
+    - name: Test local HTTP response
+      uri:
+        url: http://127.0.0.1:8000/health
+        method: GET
+        timeout: 10
+      register: health_check
+      ignore_errors: yes
+
+    - name: Display health check result
+      debug:
+        msg: "Health check status: {{ health_check.status | default('Failed') }}"
+
+    - name: Show portfolio service status
+      command: systemctl status portfolio
+      register: portfolio_status
+      ignore_errors: yes
+
+    - name: Display portfolio service status
+      debug:
+        var: portfolio_status.stdout_lines

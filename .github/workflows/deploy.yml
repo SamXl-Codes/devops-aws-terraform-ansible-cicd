@@ -147,12 +147,24 @@ jobs:
           REPO_URL="https://github.com/SamXl-Codes/devops-aws-terraform-ansible-cicd.git"
           echo "Deploying from: $REPO_URL"
 
-          # === Run Ansible ===
+          # === Test connectivity first ===
+          echo "Testing Ansible connectivity..."
+          ansible all -i inventory.ini -m ping --ssh-common-args="-o StrictHostKeyChecking=no"
+
+          # === Run Ansible with verbose output ===
+          echo "Running Ansible playbook..."
           ansible-playbook \
             -i inventory.ini \
             config/ansible/deploy_portfolio_flask.yml \
             --ssh-common-args="-o StrictHostKeyChecking=no" \
-            -e "repo_url=$REPO_URL"
+            -e "repo_url=$REPO_URL" \
+            -v
+
+          # === Verify deployment ===
+          echo "Verifying deployment..."
+          ansible all -i inventory.ini -m shell -a "systemctl status portfolio" --ssh-common-args="-o StrictHostKeyChecking=no" || true
+          ansible all -i inventory.ini -m shell -a "systemctl status nginx" --ssh-common-args="-o StrictHostKeyChecking=no" || true
+          ansible all -i inventory.ini -m shell -a "curl -s -o /dev/null -w '%{http_code}' http://localhost" --ssh-common-args="-o StrictHostKeyChecking=no" || true
 
           # === Show success URL ===
           echo ""

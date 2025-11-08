@@ -3,11 +3,11 @@ Description=Gunicorn instance for portfolio app
 After=network.target
 
 [Service]
-User=ec2-user
-Group=nginx
-WorkingDirectory=/opt/portfolio
-Environment="PATH=/opt/portfolio/venv/bin"
-ExecStart=/opt/portfolio/venv/bin/gunicorn --workers 3 --bind 127.0.0.1:8000 app:app
+User={{ app_user }}
+Group={{ app_user }}
+WorkingDirectory={{ app_dir }}/app
+Environment="PATH={{ venv_dir }}/bin"
+ExecStart={{ venv_dir }}/bin/gunicorn --workers 3 --bind 127.0.0.1:8000 app:app
 Restart=always
 
 [Install]
