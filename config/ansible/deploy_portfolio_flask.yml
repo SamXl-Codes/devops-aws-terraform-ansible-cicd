@@ -19,17 +19,27 @@
           - docker
         state: present
 
-    - name: Create app user
+    - name: Create app user and add to docker group
       user:
         name: "{{ app_user }}"
         shell: /bin/bash
+        groups: docker
+        append: yes
 
-    - name: Remove old deployment (FIXES THE ERROR)
+    - name: Remove old deployment (if present)
       file:
         path: "{{ app_dir }}"
         state: absent
 
-    - name: Clone repository fresh every time (NEVER FAILS)
+    - name: Recreate app directory with correct ownership
+      file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0755"
+
+    - name: Clone repository fresh every time
       ansible.builtin.git:
         repo: "{{ repo_url }}"
         dest: "{{ app_dir }}"
@@ -37,6 +47,8 @@
         force: yes
         accept_hostkey: yes
         update: yes
+        single_branch: yes
+        depth: 1
       become_user: "{{ app_user }}"
 
     - name: Create virtual environment
