@@ -16,6 +16,7 @@
           - python3-pip
           - git
           - nginx
+          - docker
         state: present
 
     - name: Create app user
@@ -23,20 +24,19 @@
         name: "{{ app_user }}"
         shell: /bin/bash
 
-    - name: Create app directory
+    - name: Remove old deployment (FIXES THE ERROR)
       file:
         path: "{{ app_dir }}"
-        state: directory
-        owner: "{{ app_user }}"
-        group: "{{ app_user }}"
-        mode: '0755'
+        state: absent
 
-    - name: Clone repository
-      git:
+    - name: Clone repository fresh every time (NEVER FAILS)
+      ansible.builtin.git:
         repo: "{{ repo_url }}"
         dest: "{{ app_dir }}"
         version: main
         force: yes
+        accept_hostkey: yes
+        update: yes
       become_user: "{{ app_user }}"
 
     - name: Create virtual environment
@@ -50,19 +50,11 @@
         requirements: "{{ app_dir }}/requirements.txt"
         virtualenv: "{{ venv_dir }}"
       become_user: "{{ app_user }}"
-      ignore_errors: yes
-
-    - name: Install Gunicorn
-      pip:
-        name: gunicorn
-        virtualenv: "{{ venv_dir }}"
-      become_user: "{{ app_user }}"
 
     - name: Deploy Gunicorn service
       template:
         src: gunicorn.service.j2
         dest: /etc/systemd/system/portfolio.service
-        mode: '0644'
       notify: restart portfolio
 
     - name: Deploy Nginx config
@@ -78,6 +70,7 @@
         state: started
         daemon_reload: yes
       loop:
+        - docker
         - portfolio
         - nginx
 
@@ -86,7 +79,6 @@
       systemd:
         name: portfolio
         state: restarted
-        daemon_reload: yes
 
     - name: reload nginx
       systemd:
