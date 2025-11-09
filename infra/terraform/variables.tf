@@ -17,6 +17,7 @@ variable "aws_region" {
 variable "existing_key_pair" {
   description = "Name of the pre-created EC2 key pair"
   type        = string
+  default     = "ca-ssh-key"
 }
 
 variable "my_ip_cidr" {
