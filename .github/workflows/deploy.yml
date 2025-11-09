@@ -186,6 +186,7 @@ jobs:
       - name: Deploy with Ansible
         env:
           ANSIBLE_HOST_KEY_CHECKING: False
+          ANSIBLE_ALLOW_WORLD_READABLE_TMPFILES: '1'
           EC2_HOST: ${{ steps.tf_output.outputs.EC2_HOST }}
         run: |
           # SSH key already created in previous step
