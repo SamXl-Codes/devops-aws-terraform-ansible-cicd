@@ -119,17 +119,28 @@ jobs:
           echo "✓ Instance passed both AWS status checks."
 
       - name: Prepare SSH key
+        env:
+          SSH_PRIVATE_KEY_SECRET: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
           set -euo pipefail
-          SECRET="${{ secrets.SSH_PRIVATE_KEY }}"
-          printf '%s' "$SECRET" > key_input.txt
-          if grep -q "BEGIN" key_input.txt; then
-            mv key_input.txt key.pem
-          else
-            base64 --decode key_input.txt > key.pem
-            rm key_input.txt
-          fi
-          chmod 400 key.pem
+          python - <<'PY'
+          import base64
+          import os
+          import pathlib
+
+          secret = os.environ["SSH_PRIVATE_KEY_SECRET"]
+          key_path = pathlib.Path("key.pem")
+
+          if "BEGIN" in secret:
+              normalized = secret.replace("\r\n", "\n").replace("\\n", "\n")
+              if not normalized.endswith("\n"):
+                  normalized += "\n"
+              key_path.write_text(normalized)
+          else:
+              key_path.write_bytes(base64.b64decode(secret))
+
+          key_path.chmod(0o400)
+          PY
 
       # ──────── WAIT FOR EC2 TO BE SSH-READY ────────
       - name: Wait for EC2 instance to be ready for SSH
