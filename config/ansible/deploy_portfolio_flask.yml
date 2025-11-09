@@ -9,6 +9,14 @@
     repo_url: https://github.com/SamXl-Codes/devops-aws-terraform-ansible-cicd.git
 
   tasks:
+    - name: Ensure shared Ansible tmp directory exists
+      file:
+        path: /tmp/.ansible
+        state: directory
+        owner: root
+        group: root
+        mode: '1777'
+
     - name: Install required packages
       yum:
         name:
