@@ -1,5 +1,5 @@
 variable "public_key_base64" {
-  description = "Base64-encoded public key"
+  description = "SSH public key (raw or base64-encoded)"
   type        = string
 }
 
