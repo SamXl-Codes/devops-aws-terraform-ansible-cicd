@@ -14,6 +14,11 @@ variable "aws_region" {
   default     = "eu-west-1"
 }
 
+variable "existing_key_pair" {
+  description = "Name of the pre-created EC2 key pair"
+  type        = string
+}
+
 variable "my_ip_cidr" {
   description = "Your public IP for SSH access"
   type        = string

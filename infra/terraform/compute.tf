@@ -25,7 +25,7 @@ resource "aws_instance" "web" {
   instance_type               = "t3.micro"
   subnet_id                   = aws_subnet.public_a.id
   vpc_security_group_ids      = [aws_security_group.web_sg.id]
-  key_name                    = aws_key_pair.main.key_name
+  key_name                    = var.existing_key_pair
   associate_public_ip_address = true
 
   root_block_device {
