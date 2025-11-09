@@ -6,6 +6,9 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      AWS_REGION: eu-west-1
+      AWS_DEFAULT_REGION: eu-west-1
     permissions:
       contents: read
       actions: read
@@ -99,8 +102,21 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
           PUBLIC_IP=$(terraform output -raw public_ip)
+          INSTANCE_ID=$(terraform output -raw instance_id)
           echo "EC2_HOST=$PUBLIC_IP" >> $GITHUB_OUTPUT
+          echo "EC2_INSTANCE_ID=$INSTANCE_ID" >> $GITHUB_OUTPUT
           echo "✓ EC2 Public IP: $PUBLIC_IP"
+          echo "✓ EC2 Instance ID: $INSTANCE_ID"
+
+      - name: Wait for AWS EC2 status checks
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          INSTANCE_ID: ${{ steps.tf_output.outputs.EC2_INSTANCE_ID }}
+        run: |
+          echo "Waiting for EC2 instance $INSTANCE_ID to pass AWS status checks..."
+          aws ec2 wait instance-status-ok --instance-ids "$INSTANCE_ID"
+          echo "✓ Instance passed both AWS status checks."
 
       - name: Prepare SSH key
         run: |
@@ -135,7 +151,7 @@ jobs:
                -o UserKnownHostsFile=/dev/null \
                -o ConnectTimeout=5 \
                -o BatchMode=yes \
-               ec2-user@$EC2_HOST 'echo "SSH Ready"' 2>/dev/null; then
+               ec2-user@$EC2_HOST 'echo "SSH Ready"'; then
               echo "✓ SSH connection successful! Instance is ready."
               exit 0
             fi
